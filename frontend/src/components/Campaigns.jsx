@@ -88,6 +88,8 @@ export default function Campaigns({ nodes }) {
   const [form, setForm] = useState({
     name: "",
     template_id: "",
+    subjects: [""],      // A/B subject list
+    sender_name: "",    // Display name in From header
     cta_url: "",
     rate_per_hour: 120,
     chunk_size: 2000,
@@ -242,6 +244,8 @@ export default function Campaigns({ nodes }) {
     setForm({
       name: "",
       template_id: "",
+      subjects: [""],
+      sender_name: "",
       cta_url: "",
       rate_per_hour: 120,
       chunk_size: 2000,
@@ -258,9 +262,17 @@ export default function Campaigns({ nodes }) {
   function openDraftEditor(parentCampaign, draftCampaign) {
     setSelectedCampaignId(parentCampaign?.id || draftCampaign.parent_campaign_id || null)
     setEditingCampaignId(draftCampaign.id)
+    // Parse saved subjects from JSON
+    let parsedSubjects = [""]
+    try {
+      const parsed = JSON.parse(draftCampaign.subjects || "[]")
+      if (Array.isArray(parsed) && parsed.length > 0) parsedSubjects = parsed
+    } catch {}
     setForm({
       name: draftCampaign.name || "",
       template_id: draftCampaign.template_id ? String(draftCampaign.template_id) : "",
+      subjects: parsedSubjects,
+      sender_name: draftCampaign.sender_name || "",
       cta_url: draftCampaign.cta_url || "",
       rate_per_hour: draftCampaign.rate_per_hour || 120,
       chunk_size: draftCampaign.chunk_size || 2000,
@@ -281,11 +293,16 @@ export default function Campaigns({ nodes }) {
     const isTest = kind === "test"
     const isLaunch = kind === "launch"
 
+    // Build subjects list: filter out empty entries, fallback to template subject
+    const subjectsList = (form.subjects || []).map(s => s.trim()).filter(Boolean)
+
     const payload = {
       name: form.name.trim() || "Campanha",
       parent_campaign_id: selectedCampaignId,
       template_id: form.template_id ? Number(form.template_id) : null,
-      subject: (template?.subject || "").trim(),
+      subject: subjectsList[0] || (template?.subject || "").trim(),
+      subjects: subjectsList,
+      sender_name: form.sender_name.trim() || null,
       cta_url: form.cta_url.trim(),
       rate_per_hour: Number(form.rate_per_hour) || 0,
       chunk_size: Number(form.chunk_size) || 2000,
@@ -300,7 +317,7 @@ export default function Campaigns({ nodes }) {
     }
 
     if (!payload.template_id) return setError("Selecione um template")
-    if (!isDraft && !payload.subject) return setError("Assunto obrigatorio")
+    if (!isDraft && !payload.subject && subjectsList.length === 0) return setError("Assunto obrigatorio")
     if (!isDraft && !payload.node_ids.length) return setError("Selecione pelo menos uma VPS")
     if (isTest && !payload.test_recipient) return setError("Email de teste obrigatorio")
     if (isLaunch && !payload.list_id) return setError("Selecione uma lista de destinatários")
@@ -401,9 +418,54 @@ export default function Campaigns({ nodes }) {
           />
         </div>
 
+        {/* Subjects (A/B) + Sender Name */}
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: "0.78em", color: "#8b949e", marginBottom: 6, fontWeight: 600 }}>Assuntos (A/B — os agentes alternarão entre eles)</div>
+            {(form.subjects || [""]).map((subj, idx) => (
+              <div key={idx} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                <input
+                  value={subj}
+                  onChange={(e) => {
+                    const updated = [...(form.subjects || [""])]
+                    updated[idx] = e.target.value
+                    updateField("subjects", updated)
+                  }}
+                  placeholder={idx === 0 ? "Assunto principal (ou use o do template)" : `Assunto alternativo ${idx + 1}`}
+                  style={{ flex: 1, padding: 10, borderRadius: 6, border: `1px solid ${idx === 0 ? "#30363d" : "#1f6feb"}`, background: "#0d1117", color: "#c9d1d9", fontSize: "0.9em" }}
+                />
+                {(form.subjects || []).length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => updateField("subjects", (form.subjects || []).filter((_, i) => i !== idx))}
+                    style={{ padding: "6px 10px", borderRadius: 6, background: "#2d1616", color: "#f85149", border: "1px solid #f85149", cursor: "pointer", fontSize: "0.85em" }}
+                  >✕</button>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => updateField("subjects", [...(form.subjects || [""]), ""])}
+              style={{ fontSize: "0.78em", padding: "4px 10px", borderRadius: 6, background: "#0d2238", color: "#58a6ff", border: "1px solid #1f6feb", cursor: "pointer" }}
+            >+ Adicionar assunto A/B</button>
+          </div>
+          <div>
+            <div style={{ fontSize: "0.78em", color: "#8b949e", marginBottom: 6, fontWeight: 600 }}>Nome do Remetente (opcional)</div>
+            <input
+              value={form.sender_name}
+              onChange={(e) => updateField("sender_name", e.target.value)}
+              placeholder='Ex: "Equipe de Vendas" — aparece como Nome &lt;email@dominio&gt;'
+              style={{ width: "100%", padding: 10, borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9", boxSizing: "border-box", fontSize: "0.9em" }}
+            />
+            {form.sender_name && (
+              <div style={{ fontSize: "0.72em", color: "#58a6ff", marginTop: 4 }}>Prévia: "{form.sender_name}" &lt;email@dominio.com&gt;</div>
+            )}
+          </div>
+        </div>
+
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr", gap: 12 }}>
-          <div style={{ padding: 10, borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: template?.subject ? "#c9d1d9" : "#6e7681", minHeight: 42, display: "flex", alignItems: "center" }}>
-            {template?.subject || "Assunto vem do template selecionado"}
+          <div style={{ padding: 10, borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: template?.subject ? "#c9d1d9" : "#6e7681", minHeight: 42, display: "flex", alignItems: "center", fontSize: "0.85em" }}>
+            <span style={{ color: "#6e7681", marginRight: 6 }}>Template:</span> {template?.subject || "Assunto vem do template selecionado"}
           </div>
           <input
             value={form.cta_url}

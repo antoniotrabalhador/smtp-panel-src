@@ -13,6 +13,8 @@ import (
 type Task struct {
 	ID             int      `json:"id"`
 	Subject        string   `json:"subject"`
+	Subjects       string   `json:"subjects"`    // JSON array for A/B testing
+	SenderName     string   `json:"sender_name"` // Display name for From header
 	Body           string   `json:"body"`
 	HTML           string   `json:"html"`
 	PlainText      string   `json:"plain_text"`

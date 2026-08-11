@@ -97,24 +97,38 @@ async def get_agent_logs(node: Node, lines: int = 150) -> dict:
         return {"success": False, "output": str(exc)}
 
 
-async def get_postfix_stats(node: Node, since: Optional[str] = None, until: Optional[str] = None) -> dict:
+async def get_postfix_stats(node: Node, since=None, until: Optional[str] = None) -> dict:
     """
     SSH into a node and count sent/bounced/deferred from /var/log/mail.log using grep.
+    If `since` is a datetime, only counts entries at or after that timestamp.
     Returns: {success, sent, bounced, deferred, top_reasons}
     """
     try:
         async with asyncssh.connect(**_connect_kwargs(node)) as conn:
-            # Use simple grep to count each status type — no Python escaping needed
+            # Build awk date filter if since is provided
+            if since is not None:
+                # Format: "Aug 10 15:30" — mail.log uses syslog format "Mon DD HH:MM:SS"
+                # We filter lines where the timestamp is >= since
+                # awk compares month/day/time strings lexicographically with padding
+                since_str = since.strftime("%b %_d %H:%M:%S").replace("  ", " ")
+                # Use awk to filter: keep lines where timestamp >= since_str
+                log_source = (
+                    f"awk -v since='{since_str}' "
+                    f"'{{ts=$1\" \"$2\" \"$3; if (ts >= since) print}}' /var/log/mail.log 2>/dev/null"
+                )
+            else:
+                log_source = "cat /var/log/mail.log 2>/dev/null"
+
             script = (
-                "LOG=/var/log/mail.log; "
-                "SENT=$(grep -c 'status=sent' $LOG 2>/dev/null || echo 0); "
-                "BOUNCED=$(grep -c 'status=bounced' $LOG 2>/dev/null || echo 0); "
-                "DEFERRED=$(grep -c 'status=deferred' $LOG 2>/dev/null || echo 0); "
+                f"LOG_DATA=$({log_source}); "
+                "SENT=$(echo \"$LOG_DATA\" | grep -c 'status=sent' || echo 0); "
+                "BOUNCED=$(echo \"$LOG_DATA\" | grep -c 'status=bounced' || echo 0); "
+                "DEFERRED=$(echo \"$LOG_DATA\" | grep -c 'status=deferred' || echo 0); "
                 "echo SENT=$SENT; "
                 "echo BOUNCED=$BOUNCED; "
                 "echo DEFERRED=$DEFERRED; "
                 # Top bounce reasons from DSN lines
-                "grep 'status=bounced' $LOG 2>/dev/null | grep -oP '\\(.*?\\)' | sort | uniq -c | sort -rn | head -5 | while read cnt reason; do echo \"REASON:$cnt $reason\"; done; "
+                "echo \"$LOG_DATA\" | grep 'status=bounced' | grep -oP '\\(.*?\\)' | sort | uniq -c | sort -rn | head -5 | while read cnt reason; do echo \"REASON:$cnt $reason\"; done; "
                 "true"
             )
             result = await conn.run(script, check=False)

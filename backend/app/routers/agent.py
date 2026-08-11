@@ -93,6 +93,8 @@ def _dispatch_shard_chunk(shard: CampaignShard, node: Node, session: Session) ->
         campaign_id=campaign.id,
         shard_id=shard.id,
         subject=campaign.subject,
+        subjects=campaign.subjects or "[]",
+        sender_name=campaign.sender_name,
         body=template.plain_text or "",
         html=template.html,
         plain_text=template.plain_text,
@@ -159,6 +161,18 @@ def poll_tasks(node_id: int, x_agent_token: str = Header(...), session: Session 
             from fastapi.responses import Response
             return Response(status_code=204)
 
+        # If campaign is still "scheduled" but its time has passed, transition to "running"
+        if task.campaign_id:
+            campaign = session.get(Campaign, task.campaign_id)
+            if campaign and campaign.status == "scheduled":
+                sched = campaign.scheduled_at
+                if sched:
+                    sched_naive = sched.replace(tzinfo=None) if sched.tzinfo else sched
+                    if sched_naive <= datetime.utcnow():
+                        campaign.status = "running"
+                        session.add(campaign)
+                        session.commit()
+
     # Build unsubscribe_url if not set
     unsub_url = task.unsubscribe_url or ""
     if not unsub_url and node.domain and node.id:
@@ -171,6 +185,8 @@ def poll_tasks(node_id: int, x_agent_token: str = Header(...), session: Session 
     return {
         "id": task.id,
         "subject": task.subject,
+        "subjects": task.subjects or "[]",
+        "sender_name": task.sender_name or "",
         "body": task.body,
         "html": task.html or "",
         "plain_text": task.plain_text or task.body,

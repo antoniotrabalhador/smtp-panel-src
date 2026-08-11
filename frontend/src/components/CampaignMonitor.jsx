@@ -21,10 +21,11 @@ function ProgressBar({ value, total, color = "#238636", height = 8, animated = f
 
 function StatusBadge({ status }) {
   const config = {
-    running: { label: "em execução", color: "#d29922", bg: "#2d2007" },
-    paused:  { label: "pausada",     color: "#8b949e", bg: "#1c2128" },
-    done:    { label: "concluída",   color: "#3fb950", bg: "#0f2d18" },
-    pending: { label: "aguardando",  color: "#58a6ff", bg: "#0d2238" },
+    running:   { label: "em execução", color: "#d29922", bg: "#2d2007" },
+    paused:    { label: "pausada",     color: "#8b949e", bg: "#1c2128" },
+    done:      { label: "concluída",   color: "#3fb950", bg: "#0f2d18" },
+    pending:   { label: "aguardando",  color: "#58a6ff", bg: "#0d2238" },
+    scheduled: { label: "agendada",   color: "#a371f7", bg: "#1e1233" },
   }
   const c = config[status] || { label: status, color: "#8b949e", bg: "#1c2128" }
   return (
@@ -85,16 +86,25 @@ function CampaignCard({ campaign, prevSnapshot, onPause, onResume, onSyncPostfix
     <div style={{ padding: 20, borderRadius: 12, border: `1px solid ${isRunning ? "#1f6feb" : "#30363d"}`, background: "#0d1117", display: "grid", gap: 16 }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-            <strong style={{ fontSize: "1.05em" }}>{campaign.name}</strong>
-            <StatusBadge status={campaign.status} />
-            {isRunning && (
-              <span style={{ fontSize: "0.7em", color: "#3fb950", animation: "pulse 2s infinite" }}>● AO VIVO</span>
-            )}
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+              <strong style={{ fontSize: "1.05em" }}>{campaign.name}</strong>
+              <StatusBadge status={campaign.status} />
+              {isRunning && (
+                <span style={{ fontSize: "0.7em", color: "#3fb950", animation: "pulse 2s infinite" }}>● AO VIVO</span>
+              )}
+              {campaign.status === "scheduled" && campaign.scheduled_at && (() => {
+                const diff = new Date(campaign.scheduled_at) - new Date()
+                if (diff <= 0) return <span style={{ fontSize: "0.7em", color: "#a371f7" }}>⌛ Iniciando...</span>
+                const h = Math.floor(diff / 3600000)
+                const m = Math.floor((diff % 3600000) / 60000)
+                const s = Math.floor((diff % 60000) / 1000)
+                const label = h > 0 ? `${h}h ${m}min` : m > 0 ? `${m}min ${s}s` : `${s}s`
+                return <span style={{ fontSize: "0.7em", color: "#a371f7" }}>⏰ Dispara em {label}</span>
+              })()}
+            </div>
+            <div style={{ fontSize: "0.8em", color: "#8b949e" }}>{campaign.subject || "Sem assunto"}</div>
           </div>
-          <div style={{ fontSize: "0.8em", color: "#8b949e" }}>{campaign.subject || "Sem assunto"}</div>
-        </div>
         <div style={{ display: "flex", gap: 6 }}>
           {isRunning && (
             <button
@@ -285,7 +295,11 @@ export default function CampaignMonitor() {
           <span style={{ fontWeight: 700, fontSize: "1.05em" }}>📡 Monitor de Campanhas</span>
           <span style={{ marginLeft: 12, fontSize: "0.8em", color: "#8b949e" }}>
             {campaigns.length > 0
-              ? `${campaigns.filter(c => c.status === "running").length} em execução · ${campaigns.filter(c => c.status === "paused").length} pausadas`
+              ? [
+                  campaigns.filter(c => c.status === "running").length > 0 && `${campaigns.filter(c => c.status === "running").length} em execução`,
+                  campaigns.filter(c => c.status === "paused").length > 0 && `${campaigns.filter(c => c.status === "paused").length} pausadas`,
+                  campaigns.filter(c => c.status === "scheduled").length > 0 && `${campaigns.filter(c => c.status === "scheduled").length} agendadas`,
+                ].filter(Boolean).join(" · ") || "Nenhuma campanha ativa"
               : "Nenhuma campanha ativa"}
           </span>
         </div>

@@ -124,6 +124,8 @@ class Task(SQLModel, table=True):
     status: str = Field(default="pending")
     is_test: bool = False
     subject: str
+    subjects: str = Field(default="[]")  # JSON array of subjects for A/B testing
+    sender_name: Optional[str] = None
     body: str
     html: Optional[str] = None
     plain_text: Optional[str] = None
@@ -147,6 +149,8 @@ class Task(SQLModel, table=True):
 class TaskCreate(SQLModel):
     node_id: int
     subject: str
+    subjects: List[str] = []
+    sender_name: Optional[str] = None
     body: str
     html: Optional[str] = None
     plain_text: Optional[str] = None
@@ -169,6 +173,8 @@ class TaskRead(SQLModel):
     status: str
     is_test: bool = False
     subject: str
+    subjects: str = "[]"
+    sender_name: Optional[str] = None
     body: str
     html: Optional[str] = None
     plain_text: Optional[str] = None
@@ -263,6 +269,8 @@ class Campaign(SQLModel, table=True):
     template_id: Optional[int] = Field(default=None, foreign_key="emailtemplate.id")
     list_id: Optional[int] = Field(default=None, foreign_key="recipientlist.id")
     subject: str = ""
+    subjects: str = Field(default="[]")  # JSON array for A/B testing
+    sender_name: Optional[str] = None
     cta_url: Optional[str] = None
     rate_per_hour: int = 0
     chunk_size: int = 2000
@@ -284,6 +292,8 @@ class CampaignCreate(SQLModel):
     template_id: Optional[int] = None
     list_id: Optional[int] = None
     subject: Optional[str] = None
+    subjects: List[str] = []  # List of subjects for A/B testing
+    sender_name: Optional[str] = None
     cta_url: Optional[str] = None
     rate_per_hour: int = 0
     chunk_size: int = 2000
@@ -303,6 +313,8 @@ class CampaignRead(SQLModel):
     template_id: Optional[int] = None
     list_id: Optional[int] = None
     subject: str
+    subjects: str = "[]"
+    sender_name: Optional[str] = None
     cta_url: Optional[str] = None
     rate_per_hour: int
     chunk_size: int
@@ -439,6 +451,7 @@ class CloudflareDomain(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     domain: str
     zone_id: Optional[str] = None
+    account_id: Optional[int] = Field(default=None)  # FK to cloudflareaccount.id
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     _check_domain = field_validator("domain")(_validate_domain)
@@ -455,4 +468,26 @@ class CloudflareDomainRead(SQLModel):
     id: int
     domain: str
     zone_id: Optional[str] = None
+    account_id: Optional[int] = None
+    created_at: datetime
+
+
+# ── Cloudflare Accounts ───────────────────────────────────────────────────────
+
+class CloudflareAccount(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    api_token: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CloudflareAccountCreate(SQLModel):
+    name: str
+    api_token: str
+
+
+class CloudflareAccountRead(SQLModel):
+    id: int
+    name: str
+    domain_count: int = 0
     created_at: datetime

@@ -171,9 +171,17 @@ def create_campaign(payload: CampaignCreate, session: Session = Depends(get_sess
             raise HTTPException(status_code=400, detail="Selecione um template")
 
         template = _load_template(payload.template_id, session)
-        subject = (payload.subject or template.subject or "").strip()
+        # Build subjects list: use payload.subjects if provided, else fall back to subject field, then template
+        subjects_list = [s.strip() for s in payload.subjects if s.strip()] if payload.subjects else []
+        if not subjects_list:
+            fallback = (payload.subject or template.subject or "").strip()
+            if fallback:
+                subjects_list = [fallback]
+        subject = subjects_list[0] if subjects_list else ""
         if not payload.is_draft and not subject:
             raise HTTPException(status_code=400, detail="Assunto obrigatorio")
+
+        subjects_json = json.dumps(subjects_list, ensure_ascii=False)
 
         if payload.is_draft:
             recipients = []
@@ -195,6 +203,8 @@ def create_campaign(payload: CampaignCreate, session: Session = Depends(get_sess
             parent_campaign_id=payload.parent_campaign_id,
             template_id=template.id,
             subject=subject,
+            subjects=subjects_json,
+            sender_name=(payload.sender_name or "").strip() or None,
             cta_url=(payload.cta_url or "").strip() or None,
             rate_per_hour=payload.rate_per_hour,
             scheduled_at=payload.scheduled_at,
@@ -219,6 +229,8 @@ def create_campaign(payload: CampaignCreate, session: Session = Depends(get_sess
                         campaign_id=campaign.id,
                         is_test=False,
                         subject=subject,
+                        subjects=subjects_json,
+                        sender_name=campaign.sender_name,
                         body=template.plain_text or "",
                         html=template.html,
                         plain_text=template.plain_text,
@@ -249,20 +261,34 @@ def update_campaign(campaign_id: int, payload: CampaignCreate, session: Session 
         raise HTTPException(status_code=400, detail="Selecione um template")
 
     template = _load_template(payload.template_id, session)
-    subject = (payload.subject or template.subject or "").strip()
+    subjects_list = [s.strip() for s in payload.subjects if s.strip()] if payload.subjects else []
+    if not subjects_list:
+        fallback = (payload.subject or template.subject or "").strip()
+        if fallback:
+            subjects_list = [fallback]
+    subject = subjects_list[0] if subjects_list else ""
     if not payload.is_draft and not subject:
         raise HTTPException(status_code=400, detail="Assunto obrigatorio")
+
+    subjects_json = json.dumps(subjects_list, ensure_ascii=False)
+    
+    sched = payload.scheduled_at.replace(tzinfo=None) if (payload.scheduled_at and payload.scheduled_at.tzinfo) else payload.scheduled_at
+    is_scheduled = bool(sched and sched > datetime.utcnow())
+    new_status = "draft" if payload.is_draft else ("scheduled" if is_scheduled else "ready")
 
     campaign.name = payload.name.strip() or campaign.name or "Campanha"
     campaign.parent_campaign_id = payload.parent_campaign_id
     campaign.template_id = template.id
     campaign.subject = subject
+    campaign.subjects = subjects_json
+    campaign.sender_name = (payload.sender_name or "").strip() or None
     campaign.cta_url = (payload.cta_url or "").strip() or None
     campaign.rate_per_hour = payload.rate_per_hour
     campaign.scheduled_at = payload.scheduled_at
     campaign.window_start = (payload.window_start or "").strip() or None
     campaign.window_end = (payload.window_end or "").strip() or None
     campaign.is_draft = payload.is_draft
+    campaign.status = new_status
     if payload.is_draft:
         campaign.total_recipients = 0
 
@@ -282,14 +308,22 @@ async def test_campaign(payload: CampaignCreate, session: Session = Depends(get_
 
     nodes = _load_nodes(payload.node_ids, session)
     template = _load_template(payload.template_id, session)
-    subject = (payload.subject or template.subject or "").strip()
+    subjects_list = [s.strip() for s in payload.subjects if s.strip()] if payload.subjects else []
+    if not subjects_list:
+        fallback = (payload.subject or template.subject or "").strip()
+        if fallback:
+            subjects_list = [fallback]
+    subject = subjects_list[0] if subjects_list else ""
     if not subject:
         raise HTTPException(status_code=400, detail="Assunto obrigatorio")
+    subjects_json = json.dumps(subjects_list, ensure_ascii=False)
 
     campaign = Campaign(
         name=(payload.name.strip() or "Teste SMTP") + " [teste]",
         template_id=template.id,
         subject=subject,
+        subjects=subjects_json,
+        sender_name=(payload.sender_name or "").strip() or None,
         cta_url=(payload.cta_url or "").strip() or None,
         rate_per_hour=payload.rate_per_hour,
         test_recipient=test_recipient,
@@ -307,6 +341,8 @@ async def test_campaign(payload: CampaignCreate, session: Session = Depends(get_
             campaign_id=campaign.id,
             is_test=True,
             subject=subject,
+            subjects=subjects_json,
+            sender_name=(payload.sender_name or "").strip() or None,
             body=template.plain_text or "",
             html=template.html,
             plain_text=template.plain_text,
@@ -564,9 +600,10 @@ def delete_campaign(campaign_id: int, session: Session = Depends(get_session)):
 
 @router.get("/active")
 def list_active_campaigns(session: Session = Depends(get_session)):
-    """Return all running/paused campaigns with full shard progress — used by the monitor."""
+    """Return all running/paused/scheduled campaigns with full shard progress — used by the monitor."""
+    now = datetime.utcnow()
     campaigns = session.exec(
-        select(Campaign).where(Campaign.status.in_(["running", "paused"]))
+        select(Campaign).where(Campaign.status.in_(["running", "paused", "scheduled"]))
     ).all()
 
     if not campaigns:
@@ -574,6 +611,16 @@ def list_active_campaigns(session: Session = Depends(get_session)):
 
     result = []
     for campaign in campaigns:
+        # Auto-transition scheduled → running if scheduled_at has passed
+        if campaign.status == "scheduled":
+            sched = campaign.scheduled_at
+            if sched:
+                sched_naive = sched.replace(tzinfo=None) if sched.tzinfo else sched
+                if sched_naive <= now:
+                    campaign.status = "running"
+                    session.add(campaign)
+                    session.commit()
+
         shards = session.exec(
             select(CampaignShard).where(CampaignShard.campaign_id == campaign.id)
         ).all()
@@ -617,6 +664,8 @@ def list_active_campaigns(session: Session = Depends(get_session)):
             "id": campaign.id,
             "name": campaign.name,
             "subject": campaign.subject,
+            "subjects": campaign.subjects,
+            "sender_name": campaign.sender_name,
             "status": campaign.status,
             "rate_per_hour": campaign.rate_per_hour,
             "chunk_size": campaign.chunk_size,
@@ -626,6 +675,7 @@ def list_active_campaigns(session: Session = Depends(get_session)):
             "pct": pct,
             "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
             "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+            "scheduled_at": campaign.scheduled_at.isoformat() if campaign.scheduled_at else None,
             "shards": shard_data,
         })
 
@@ -658,8 +708,9 @@ async def sync_postfix_stats(campaign_id: int, session: Session = Depends(get_se
     total_bounced_all = 0
 
     import asyncio
+    since = campaign.started_at  # Only count emails sent after campaign started
     stats_list = await asyncio.gather(*[
-        get_postfix_stats(nodes_by_id[node_id])
+        get_postfix_stats(nodes_by_id[node_id], since=since)
         for node_id in node_ids
         if node_id in nodes_by_id
     ])
@@ -680,10 +731,12 @@ async def sync_postfix_stats(campaign_id: int, session: Session = Depends(get_se
         node_sent = node_stats.get("sent", 0)
         node_bounced = node_stats.get("bounced", 0)
 
-        # Update shard with real counts from Postfix log
-        # Use the node total (whole log) as the best approximation for this shard
-        shard.sent_count = node_sent
-        shard.error_count = node_bounced
+        # Only update if Postfix reports MORE than what agent already reported
+        # (agent is the primary source; postfix sync is a reconciliation fallback)
+        if node_sent > shard.sent_count:
+            shard.sent_count = node_sent
+        if node_bounced > shard.error_count:
+            shard.error_count = node_bounced
         session.add(shard)
 
         total_sent_all += node_sent

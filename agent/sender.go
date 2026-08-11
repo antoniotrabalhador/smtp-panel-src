@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
@@ -92,6 +93,15 @@ func waitUntilWindowOpens(ctx context.Context, taskID int, startStr, endStr stri
 func SendBatch(ctx context.Context, task *Task) []SendResult {
 	results := make([]SendResult, 0, len(task.Recipients))
 
+	// Parse A/B subjects list
+	var subjectList []string
+	if task.Subjects != "" {
+		_ = json.Unmarshal([]byte(task.Subjects), &subjectList)
+	}
+	if len(subjectList) == 0 {
+		subjectList = []string{task.Subject}
+	}
+
 	var baseDelay time.Duration
 	if task.RatePerHour > 0 {
 		baseDelay = time.Hour / time.Duration(task.RatePerHour)
@@ -125,27 +135,34 @@ func SendBatch(ctx context.Context, task *Task) []SendResult {
 		result := SendResult{To: to}
 
 		if conn != nil {
-			err = sendOnePersistent(conn, task, to)
+			err = sendOnePersistentIdx(conn, task, to, i, subjectList)
 		} else {
-			err = sendOne(task, to) // fallback: 1 conexão por e-mail
+			err = sendOneIdx(task, to, i, subjectList)
+		}
+
+		// Se a conexão SMTP caiu (idle timeout de 5min do Postfix), reconecta e RE-TENTA o envio imediatamente
+		if err != nil && isConnError(err) {
+			log.Printf("[task %d] conexão SMTP inativa/perdida ao enviar para %s — reconectando e re-tentando...", task.ID, to)
+			if conn != nil {
+				_ = conn.Close()
+				conn = nil
+			}
+			// Tenta reconectar ou envia via conexão individual
+			freshConn, connErr := openSMTPConn()
+			if connErr == nil {
+				conn = freshConn
+				err = sendOnePersistentIdx(conn, task, to, i, subjectList)
+			} else {
+				err = sendOneIdx(task, to, i, subjectList)
+			}
 		}
 
 		if err != nil {
 			result.Error = err.Error()
-			// Erro de conexão (EOF, broken pipe, etc.) → tenta reconectar
-			if conn != nil && isConnError(err) {
-				log.Printf("[task %d] conexão SMTP perdida, reconectando...", task.ID)
-				_ = conn.Close()
-				conn, err = openSMTPConn()
-				if err != nil {
-					log.Printf("[task %d] reconexão falhou: %v — modo individual", task.ID, err)
-					conn = nil
-				}
-			}
 		}
 		results = append(results, result)
 
-		// Log de progresso a cada 100 envios
+		// Log de progresso a cada 100 envios ou no final
 		if (i+1)%100 == 0 || i+1 == total {
 			elapsed := time.Since(start)
 			realRate := 0.0
@@ -157,6 +174,13 @@ func SendBatch(ctx context.Context, task *Task) []SendResult {
 		}
 
 		if baseDelay > 0 && i+1 < total {
+			// Se o delay entre e-mails for longo (>= 30s), encerra a conexão inativa
+			// para não estourar o smtpd_timeout do Postfix enquanto aguarda o próximo e-mail
+			if conn != nil && baseDelay >= 30*time.Second {
+				_ = conn.Quit()
+				conn = nil
+			}
+
 			// Usa select para que o delay também seja interrompível pelo ctx
 			select {
 			case <-ctx.Done():
@@ -170,9 +194,14 @@ func SendBatch(ctx context.Context, task *Task) []SendResult {
 	return results
 }
 
-func sendOne(task *Task, to string) error {
-	msg := buildMessage(task, to)
+func sendOneIdx(task *Task, to string, idx int, subjects []string) error {
+	msg := buildMessage(task, to, idx, subjects)
 	return sendToLocalPostfix(task.FromAddress, []string{to}, []byte(msg))
+}
+
+// Legacy wrappers for backward compat
+func sendOne(task *Task, to string) error {
+	return sendOneIdx(task, to, 0, []string{task.Subject})
 }
 
 // openSMTPConn abre e inicializa uma conexão SMTP com o Postfix local.
@@ -188,21 +217,28 @@ func openSMTPConn() (*smtp.Client, error) {
 	return c, nil
 }
 
-// sendOnePersistent envia uma mensagem em uma conexão SMTP já aberta e inicializada.
+// sendOnePersistentIdx envia uma mensagem em uma conexão SMTP já aberta e inicializada.
 // Após o DATA ser aceito, a conexão permanece aberta para a próxima transação.
 // Em caso de erro no RCPT (destinatário inválido), faz RSET para limpar o estado
 // da transação sem precisar reconectar.
-func sendOnePersistent(c *smtp.Client, task *Task, to string) error {
-	msg := buildMessage(task, to)
+func sendOnePersistentIdx(conn *smtp.Client, task *Task, to string, idx int, subjects []string) error {
+	msg := buildMessage(task, to, idx, subjects)
+	return sendViaPersistent(conn, task.FromAddress, []string{to}, []byte(msg))
+}
 
-	if err := c.Mail(task.FromAddress); err != nil {
+func sendOnePersistent(conn *smtp.Client, task *Task, to string) error {
+	return sendOnePersistentIdx(conn, task, to, 0, []string{task.Subject})
+}
+
+func sendViaPersistent(c *smtp.Client, from string, to []string, msg []byte) error {
+	if err := c.Mail(from); err != nil {
 		return err
 	}
-	if err := c.Rcpt(to); err != nil {
-		// RCPT falhou (ex: domínio inexistente) — reseta a transação SMTP
-		// para que a próxima mensagem parta de um estado limpo
-		_ = c.Reset()
-		return err
+	for _, recipient := range to {
+		if err := c.Rcpt(recipient); err != nil {
+			_ = c.Reset()
+			return err
+		}
 	}
 	w, err := c.Data()
 	if err != nil {
@@ -347,7 +383,7 @@ func encodeQuotedPrintable(s string) string {
 	return buf.String()
 }
 
-func buildMessage(task *Task, to string) string {
+func buildMessage(task *Task, to string, recipientIdx int, subjectList []string) string {
 	var sb strings.Builder
 
 	domain := extractDomain(task.FromAddress)
@@ -358,11 +394,22 @@ func buildMessage(task *Task, to string) string {
 	protocol := generateProtocol()
 
 	// ── Core headers ──────────────────────────────────────────────────────────
-	subject := replaceTags(task.Subject, to, task, protocol)
+	// A/B subject rotation: pick subject based on recipient index
+	selectedSubject := task.Subject
+	if len(subjectList) > 0 {
+		selectedSubject = subjectList[recipientIdx%len(subjectList)]
+	}
+	subject := replaceTags(selectedSubject, to, task, protocol)
 	html := replaceTags(task.HTML, to, task, protocol)
 	plain := replaceTags(task.PlainText, to, task, protocol)
 
-	sb.WriteString(fmt.Sprintf("From: %s\r\n", task.FromAddress))
+	// Build From header: "Sender Name" <email> or just <email>
+	fromHeader := task.FromAddress
+	if task.SenderName != "" {
+		encodedName := mime.QEncoding.Encode("UTF-8", task.SenderName)
+		fromHeader = fmt.Sprintf("%s <%s>", encodedName, task.FromAddress)
+	}
+	sb.WriteString(fmt.Sprintf("From: %s\r\n", fromHeader))
 	sb.WriteString(fmt.Sprintf("To: %s\r\n", to))
 	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", mime.QEncoding.Encode("UTF-8", subject)))
 	sb.WriteString(fmt.Sprintf("Date: %s\r\n", now.Format(time.RFC1123Z)))

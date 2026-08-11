@@ -44,6 +44,8 @@ NEW_TASK_COLUMNS = {
     "scheduled_at": "TEXT",
     "window_start": "TEXT",
     "window_end": "TEXT",
+    "subjects": "TEXT DEFAULT '[]'",
+    "sender_name": "TEXT",
 }
 
 NEW_CAMPAIGN_COLUMNS = {
@@ -56,6 +58,12 @@ NEW_CAMPAIGN_COLUMNS = {
     "scheduled_at": "TEXT",
     "window_start": "TEXT",
     "window_end": "TEXT",
+    "subjects": "TEXT DEFAULT '[]'",
+    "sender_name": "TEXT",
+}
+
+NEW_CLOUDFLAREDOMAIN_COLUMNS = {
+    "account_id": "INTEGER",
 }
 
 
@@ -89,6 +97,11 @@ def _migrate_campaign_columns():
     _migrate_table_columns("campaign", NEW_CAMPAIGN_COLUMNS)
 
 
+def _migrate_cloudflare_columns():
+    _migrate_table_columns("cloudflaredomain", NEW_CLOUDFLAREDOMAIN_COLUMNS)
+    # Ensure cloudflareaccount table exists (handled by SQLModel.metadata.create_all)
+
+
 NEW_WEBHOOK_COLUMNS = {
     "status": "TEXT DEFAULT 'pending_config'",
     "sample_payload": "TEXT",
@@ -109,6 +122,7 @@ def create_db_and_tables():
     _migrate_task_columns()
     _migrate_campaign_columns()
     _migrate_webhook_columns()
+    _migrate_cloudflare_columns()
 
 
 def get_session():

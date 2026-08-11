@@ -58,6 +58,7 @@ def upload_csv(
     # Save the huge file to a temporary file on disk so we don't load 500MB in RAM
     fd, tmp_path = tempfile.mkstemp(suffix=".csv")
     with os.fdopen(fd, "wb") as f_out:
+        file.file.seek(0)
         shutil.copyfileobj(file.file, f_out)
 
     background_tasks.add_task(process_csv_background, list_id, tmp_path)

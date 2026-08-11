@@ -146,3 +146,54 @@ export async function deleteCloudflareDomainRecord(domainId, recordId) {
     throw new Error(err.detail || "failed to delete domain record")
   }
 }
+
+// ── Multi-account Cloudflare ──────────────────────────────────────────────────
+
+export async function listCloudflareAccounts() {
+  const res = await fetch(`${API_BASE}/cloudflare/accounts`)
+  if (!res.ok) throw new Error("failed to list cloudflare accounts")
+  return res.json()
+}
+
+export async function addCloudflareAccount(payload) {
+  const res = await fetch(`${API_BASE}/cloudflare/accounts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || "failed to add cloudflare account")
+  }
+  return res.json()
+}
+
+export async function deleteCloudflareAccount(id) {
+  const res = await fetch(`${API_BASE}/cloudflare/accounts/${id}`, { method: "DELETE" })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || "failed to delete cloudflare account")
+  }
+}
+
+export async function previewCloudflareZones(accountId) {
+  const res = await fetch(`${API_BASE}/cloudflare/accounts/${accountId}/preview-zones`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || "failed to preview cloudflare zones")
+  }
+  return res.json()
+}
+
+export async function importSelectedZones(accountId, zoneIds) {
+  const res = await fetch(`${API_BASE}/cloudflare/accounts/${accountId}/import-zones`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ zone_ids: zoneIds }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || "failed to import zones")
+  }
+  return res.json()
+}

@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from app.cloudflare_api import cf_find_zone_id, cf_upsert_record
 from app.db import get_session
-from app.models import CloudflareConfig, CloudflareDomain, Node, NodeCreate, NodeRead, NodeUpdate, Task, TaskCreate, TaskRead, generate_token
+from app.models import CloudflareAccount, CloudflareConfig, CloudflareDomain, Node, NodeCreate, NodeRead, NodeUpdate, Task, TaskCreate, TaskRead, generate_token
 from app.ssh import stream_bootstrap, test_ssh_connection, send_test_email, stream_install_agent, stream_restart_agent, stream_install_unsubscribe, get_agent_logs
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -103,8 +103,16 @@ def provision_cloudflare_dns(node_id: int, stage: str = "initial", session: Sess
         linked_domain = session.get(CloudflareDomain, node.cloudflare_domain_id) if node.cloudflare_domain_id else None
         domain_name = linked_domain.domain if linked_domain else node.domain
 
-        cfg = session.get(CloudflareConfig, 1)
-        token = (cfg.api_token if cfg and cfg.api_token else os.getenv("CLOUDFLARE_API_TOKEN", "")).strip()
+        token = ""
+        if linked_domain and linked_domain.account_id:
+            account = session.get(CloudflareAccount, linked_domain.account_id)
+            if account and account.api_token:
+                token = account.api_token.strip()
+
+        if not token:
+            cfg = session.get(CloudflareConfig, 1)
+            token = (cfg.api_token if cfg and cfg.api_token else os.getenv("CLOUDFLARE_API_TOKEN", "")).strip()
+
         if not token:
             raise HTTPException(status_code=400, detail="Token Cloudflare não configurado (aba Cloudflare)")
 

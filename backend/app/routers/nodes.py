@@ -22,13 +22,17 @@ def _check_dns(domain: str, node_ip: str, dkim_selector: str, dkim_record: str, 
     """Check DNS records for a node and return list of results."""
     results = []
     resolver = dns.resolver.Resolver()
+    resolver.nameservers = ['8.8.8.8', '1.1.1.1']
     resolver.timeout = 5
     resolver.lifetime = 5
 
     def check(label: str, record_type: str, name: str, expect_fn):
         try:
             answers = resolver.resolve(name, record_type)
-            values = [r.to_text().strip('"') for r in answers]
+            if record_type == "TXT":
+                values = ["".join([b.decode() if isinstance(b, bytes) else b for b in r.strings]) for r in answers]
+            else:
+                values = [r.to_text().strip('"') for r in answers]
             ok, detail = expect_fn(values)
             results.append({"label": label, "name": name, "type": record_type, "ok": ok, "detail": detail, "values": values})
         except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
